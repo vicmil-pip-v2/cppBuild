@@ -1,0 +1,347 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[0]))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+sys.path.append(str(Path(__file__).resolve().parents[3]))
+sys.path.append(str(Path(__file__).resolve().parents[4]))
+sys.path.append(str(Path(__file__).resolve().parents[5]))
+
+from vizpip_env.lib.pyUtil import *
+
+"""
+[vmdoc:start]
+# BuildSetup
+
+Used for building projects in c++
+The build setup is a specification for how to build a c++ project,
+you can merge one build setup with another build setup, to form a combined build setup,
+this way you can merge different libraries build setup. 
+
+Since it is python, you do not need additional dependencies such as cmake, and it is 
+really easy to run projects, just run the python file :)
+
+## Usage
+
+The basic idea is just to allow adding compiler arguments, where they are later put in an order so they compile correctly
+The different types of arguments are the following, where the n# symbolizes in which order they will appear in the build command
+
+* n1_compiler_path: str # Which compiler to use, defualts to g++ if browser=false, otherwise em++
+* n2_cpp_files: List[str] # Paths to cpp files, i.e. ["/some/path/main.cpp", "some/path/other.cpp"]
+* n3_optimization_level: List[str] # Additional optimization flags, can also be used to specify c++ version
+* n4_macros: List[str] # Macros to include, will automatically get a -D flag
+* n5_additional_compiler_settings: List[str] # Additional compiler settings, you need to specify the flag
+* n6_include_paths: List[str] # Include paths, will automatically get a -I flag
+* n7_library_paths: List[str] # Library paths, will automatically get a -L flag
+* n8_library_files: List[str] # Library files, will automatically get a -l flag
+* n9_output_file: str # Path to the file where the binary will go, typically bin/run.exe or bin/run.out or bin/run.html depending on configuration
+
+Finally you can also specify if you want the system to build for the browser or not(i.e. compile using emscripten)
+
+- browser_flag: bool
+
+[vmdoc:end]
+"""
+class BuildSetup:
+    def __init__(self, browser: bool):
+        # When building c++ projects, this is in general the order the flags should be
+        self.n1_compiler_path: str = None
+        self.n2_cpp_files: list = []
+        self.n3_optimization_level: list = []
+        self.n4_macros: list = []
+        self.n5_additional_compiler_settings: list = []
+        self.n6_include_paths: list = []
+        self.n7_library_paths: list = []
+        self.n8_library_files: list = []
+        self.n9_output_file: str = None
+
+        self.browser_flag = browser
+
+        
+    def add_default_parameters(self, cpp_file_paths: List[str], output_dir: str, O2_optimization=True):
+        # Set compiler path, and output path
+        self.n1_compiler_path: str = get_default_compiler_path(browser=self.browser_flag)
+        if os.path.exists(get_directory_path(__file__, 1) + "/cppCompiler"):
+            self.add_vicmil_pip_package("cppCompiler") # Fix missing threads and mutex implementation on windows
+
+        self.n9_output_file: str = output_dir + "/" + get_default_output_file(browser=self.browser_flag)
+
+
+        # Add other paramters
+        new_build_setup = BuildSetup(self.browser_flag)
+        new_build_setup.n2_cpp_files =                      [path_ for path_ in cpp_file_paths]
+        new_build_setup.n3_optimization_level =             ["-std=c++11"] # Specify using c++11 by default
+        new_build_setup.n4_macros =                         []
+        new_build_setup.n5_additional_compiler_settings =   []
+        new_build_setup.n6_include_paths =                  [get_directory_path(__file__, 0)]
+        new_build_setup.n7_library_paths =                  []
+        new_build_setup.n8_library_files =                  []
+
+        # Add conditional parameters
+        if O2_optimization:
+            new_build_setup.n3_optimization_level.append("-O2") # Add some default optimization during compilation
+
+        if self.browser_flag:
+            # Add additional flags when compiling with emscripten
+            new_build_setup.n5_additional_compiler_settings.append("-s ASYNCIFY=1") # Enable sleep with emscripten
+            new_build_setup.n5_additional_compiler_settings.append("-s ALLOW_MEMORY_GROWTH") # Do not limit the app to a small amount of memory
+            new_build_setup.n5_additional_compiler_settings.append("-s EXPORTED_RUNTIME_METHODS=ccall,cwrap")
+            new_build_setup.n8_library_files.append("embind") # Allow binding javascript functions from c++
+
+        self.add_other_build_setup(new_build_setup)
+
+
+    def add_vicmil_pip_package(self, package_name: str):
+        package_path = get_directory_path(__file__, 1) + "/" + package_name
+        if os.path.exists(package_path + "/cpp_build.py"):
+            print(f"including {package_name} cpp_build config")
+
+            # Load the file
+            spec = importlib.util.spec_from_file_location(package_name, package_path + "/cpp_build.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Add dependency packages
+            if hasattr(module, "get_dependencies"):
+                dependencies = module.get_dependencies(browser=self.browser_flag)
+                for dependency in dependencies:
+                    self.add_vicmil_pip_package(dependency)
+
+            # Load the config from the file
+            new_build_setup: BuildSetup = module.get_build_setup(self.browser_flag)  # Call a function from the script
+
+            # Add necessary dll files
+            if hasattr(module, "copy_dll_files"):
+                module.copy_dll_files(browser=self.browser_flag, output_dir=get_directory_path(self.n9_output_file))
+
+
+            # Add config to build setup
+            self.add_other_build_setup(new_build_setup)
+        else:
+            print(f"Warning: invalid vicmil-pip package: {package_name}")
+
+
+    def add_installed_vicmil_pip_packages(self):
+        # Iterate through all installed vicmil pip packages
+        # For each package:
+        #   Get their default build setup, if there is one
+        #   Append paramters to this build setup
+        # List all the packages and print their description
+        dirs = os.listdir(get_directory_path(__file__, 1))        
+        folders = list()
+        for f in dirs:
+            if f == "__pycache__":
+                continue
+            if f == "venv":
+                continue
+            folders.append(f)
+
+        print(f"found {len(folders)} installed packages")
+        print(folders)
+        for package_name in folders:
+            self.add_vicmil_pip_package(package_name)
+
+
+    def add_other_build_setup(self, other):
+        other: BuildSetup = other # Specify type
+
+        for arg_ in other.n2_cpp_files:
+            if not arg_ in self.n2_cpp_files:
+                self.n2_cpp_files.append(arg_)
+
+        for arg_ in other.n3_optimization_level:
+            if not arg_ in self.n3_optimization_level:
+                self.n3_optimization_level.append(arg_)
+
+        for arg_ in other.n4_macros:
+            if not arg_ in self.n4_macros:
+                self.n4_macros.append(arg_)
+
+        for arg_ in other.n5_additional_compiler_settings:
+            if not arg_ in self.n5_additional_compiler_settings:
+                self.n5_additional_compiler_settings.append(arg_)
+
+        for arg_ in other.n6_include_paths:
+            if not arg_ in self.n6_include_paths:
+                self.n6_include_paths.append(arg_)
+
+        for arg_ in other.n7_library_paths:
+            if not arg_ in self.n7_library_paths:
+                self.n7_library_paths.append(arg_)
+
+        for arg_ in other.n8_library_files:
+            if not arg_ in self.n8_library_files:
+                self.n8_library_files.append(arg_)
+
+
+    def generate_build_command(self):
+        # Generate warnings if include paths, cpp files, or lib paths do not exist
+        for path in self.n2_cpp_files:
+            if not os.path.exists(path):
+                print(f"Warning! Cpp path does not exist: {path}")
+
+        for path in self.n6_include_paths:
+            if not os.path.exists(path):
+                print(f"Warning! Include path does not exist: {path}")
+
+        for path in self.n7_library_paths:
+            if not os.path.exists(path):
+                print(f"Warning! Lib path does not exist: {path}")
+
+        arguments = [
+            self.n1_compiler_path, 
+            " ".join(['"' + path_ + '"' for path_ in self.n2_cpp_files]),
+            " ".join(self.n3_optimization_level),
+            " ".join(['-D ' + arg_ for arg_ in self.n4_macros]),
+            " ".join(self.n5_additional_compiler_settings),
+            " ".join(['-I "' + path_ + '"' for path_ in self.n6_include_paths]),
+            " ".join(['-L "' + path_ + '"' for path_ in self.n7_library_paths]),
+            " ".join(['-l ' + arg_ for arg_ in self.n8_library_files]),
+            "-o " + '"' + self.n9_output_file + '"',
+        ]
+
+        # Remove arguments with length 0
+        arguments = filter(lambda arg: len(arg) > 0, arguments)
+
+        return " ".join(arguments)
+    
+    def build(self):
+        build_command = self.generate_build_command()
+
+        # Remove the output file if it exists already
+        if os.path.exists(self.n9_output_file):
+            os.remove(self.n9_output_file)
+
+        if not os.path.exists(get_directory_path(self.n9_output_file, 0)):
+            # Create the output directory if it does not exist
+            os.makedirs(get_directory_path(self.n9_output_file, 0), exist_ok=True)
+
+        # Run the build command
+        print(build_command)
+        run_command(build_command)
+
+    def run(self):
+        invoke_file(self.n9_output_file)
+
+    def build_and_run(self):
+        self.build()
+        self.run()
+
+
+
+def get_default_output_file(browser = False):
+    platform_name = platform.system()
+
+    if not browser:
+        if platform_name == "Windows": # Windows
+            return "run.exe"
+
+        elif platform_name == "Linux": # Linux
+            return "run.out"
+
+        else:
+            raise NotImplementedError()
+        
+    else:
+        return "run.html"
+
+
+def run_command(command: str) -> None:
+    """Run a command in the terminal"""
+    platform_name = platform.system()
+    if platform_name == "Windows": # Windows
+        print("running command: ", f'powershell; &{command}')
+        if command[0] != '"':
+            os.system(f'powershell; {command}')
+        else:
+            os.system(f'powershell; &{command}')
+    else:
+        os.system(command)
+
+
+def invoke_file(file_path: str):
+    if not os.path.exists(file_path):
+        print(file_path + " does not exist")
+        return
+
+    file_extension = file_path.split(".")[-1]
+
+    if file_extension == "html":
+        # Create a local python server and open the file in the browser
+        serve_html_page(file_path)
+
+    elif file_extension == "exe" or file_extension == "out":
+        # Navigate to where the file is located and invoke the file
+        file_directory = get_directory_path(file_path, 0)
+        os.chdir(file_directory) # Change active directory
+        run_command('"' + file_path + '"')
+
+
+# Get the defualt compiler path within vicmil lib
+def get_default_compiler_path(browser = False):
+    if not browser:
+        if os.path.exists(get_directory_path(__file__, 1) + "/cppCompiler"):
+            import vizpip_env.lib.cppCompiler.setup as compiler_setup
+            compiler_setup.add_env_paths_to_compiler()
+            return compiler_setup.get_compiler_path()
+        else:
+            return "g++"
+
+    else:
+        if platform.system() == "Windows": # Windows
+            return '"' + get_directory_path(__file__, 1) + "/cppEmsdk/emsdk/upstream/emscripten/em++.bat" + '"'
+        else:
+            return '"' + get_directory_path(__file__, 1) + "/cppEmsdk/emsdk/upstream/emscripten/em++" + '"'
+
+
+"""
+Convert a file to a .cpp and .hpp combo, where the file data is stored in the .cpp file, but accessible from the .hpp file
+(Since the files can be large, you need a .cpp and .hpp separation to not crash the webbrowser)
+"""
+def convert_file_to_cpp(input_file: str, output_directory: str):
+    if not output_directory:
+        output_directory = get_directory_path(input_file)
+
+    input_filename = input_file.split("/")[-1].split("\\")[-1]
+
+    header_path = output_directory + "/" + input_filename.replace(" ", "_") + ".hpp"
+    cpp_path = output_directory + "/" + input_filename.replace(" ", "_") + ".cpp"
+
+    # Check if input file exists
+    if not os.path.exists(input_file):
+        print(f"Error: The file '{input_file}' does not exist.")
+        sys.exit(1)
+
+    # Open the input file for reading
+    with open(input_file, 'rb') as f:
+        file_data = f.read()
+
+    var_name = input_filename.upper().replace('.', '_').replace('-', '_').replace(' ', '_')
+    # Start creating the header file
+    with open(cpp_path, 'w') as cpp_file:
+        # Write the C++ array header
+        cpp_file.write(f'#include "{input_filename.replace(" ", "_")}.hpp"\n\n')
+        cpp_file.write(f"#ifndef {var_name}_H\n")
+        cpp_file.write(f"#define {var_name}_H\n\n")
+        cpp_file.write(f"unsigned char {var_name}_data[] = {{\n")
+
+        # Write the contents of the file as a C++ array
+        for i in range(0, len(file_data), 12):  # 12 bytes per line (adjust as needed)
+            # Format each line with the appropriate number of bytes
+            cpp_file.write("    " + ", ".join(f"0x{byte:02X}" for byte in file_data[i:i+12]))
+            cpp_file.write(",\n")
+
+        # End the array
+        cpp_file.write("};\n\n")
+        cpp_file.write(f"unsigned int {var_name}_size = {len(file_data)};\n")
+        cpp_file.write(f"#endif // {var_name}_H\n")
+
+        cpp_file.write(f"unsigned int get_{var_name}_size()" + "{ " + f"return {var_name}_size;" + " }\n")
+        cpp_file.write(f"unsigned char* get_{var_name}_data()" + "{ " + f"return {var_name}_data;" + " }\n")
+
+    with open(header_path, 'w') as header_file:
+        header_file.write(f"#pragma once\n\n")
+        header_file.write(f"unsigned int get_{var_name}_size();\n")
+        header_file.write(f"unsigned char* get_{var_name}_data();\n")
+
+    print(f"Header file '{header_path}' has been created successfully.")
