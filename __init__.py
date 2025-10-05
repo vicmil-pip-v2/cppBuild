@@ -7,7 +7,7 @@ sys.path.append(str(Path(__file__).resolve().parents[3]))
 sys.path.append(str(Path(__file__).resolve().parents[4]))
 sys.path.append(str(Path(__file__).resolve().parents[5]))
 
-from vizpip_env.lib.pyUtil import *
+from vicmil_pip.lib.pyUtil import *
 
 """
 [vmdoc:start]
